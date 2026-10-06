@@ -1,0 +1,847 @@
+/***************************************************************
+ NASA/GDDP-CMIP6
+ DISTRICT-LEVEL MONTHLY CLIMATE DATA
+ BUNDelkhand + adjoining districts
+ 2020–2040
+ SSP245 + SSP585
+ 5 CMIP6 MODELS
+
+ SELECTED MODELS:
+   1. ACCESS-CM2
+   2. MPI-ESM1-2-HR
+   3. MIROC6
+   4. NorESM2-LM
+   5. FGOALS-g3
+
+ VARIABLES:
+   pr
+   tas
+   tasmax
+   tasmin
+   hurs
+   huss
+   rlds
+   rsds
+   sfcWind
+
+ IMPORTANT (Conversion and Units) :
+   pr = kg m-2 s-1
+   pr × 86400 = mm/day
+   Monthly precipitation = SUM of daily mm/day
+
+   All other variables = MEAN of daily values
+
+   Temperature:
+   Kelvin → Celsius
+
+ OUTPUT:
+   DISTRICT
+   YEAR
+   MONTH
+   MODEL
+   SCENARIO
+   pr
+   tas
+   tasmax
+   tasmin
+   hurs
+   huss
+   rlds
+   rsds
+   sfcWind
+
+ EXPECTED:
+   14 districts × 21 years × 12 months × 5 models × 2 scenarios
+   = 35,280 records
+
+***************************************************************/
+
+
+// ============================================================
+// 1. USER SETTINGS
+// ============================================================
+
+// ------------------------------------------------------------
+// Bundelkhand Districs (UP+MP)
+// ------------------------------------------------------------
+var districts = ee.FeatureCollection(
+  'projects/projectgee-505105/assets/BU_District'
+);
+
+// ------------------------------------------------------------
+// DISTRICT NAME FIELD
+// Changed as per my shapefile.
+// ------------------------------------------------------------
+var DISTRICT_FIELD = 'DISTRICT';
+
+
+// ------------------------------------------------------------
+// STUDY PERIOD
+// ------------------------------------------------------------
+var START_YEAR = 2020;
+var END_YEAR   = 2040;
+
+
+// ------------------------------------------------------------
+// CMIP6 MODELS
+// ------------------------------------------------------------
+var MODELS = [
+  'ACCESS-CM2',
+  'MPI-ESM1-2-HR',
+  'MIROC6',
+  'NorESM2-LM',
+  'FGOALS-g3'
+];
+
+
+// ------------------------------------------------------------
+// SCENARIOS
+// ------------------------------------------------------------
+var SCENARIOS = [
+  'ssp245',
+  'ssp585'
+];
+
+
+// ------------------------------------------------------------
+// MONTHS
+// ------------------------------------------------------------
+var MONTHS = ee.List.sequence(1, 12);
+
+
+// ------------------------------------------------------------
+// VARIABLES
+// ------------------------------------------------------------
+var ALL_VARS = [
+  'pr',
+  'tas',
+  'tasmax',
+  'tasmin',
+  'hurs',
+  'huss',
+  'rlds',
+  'rsds',
+  'sfcWind'
+];
+
+var MEAN_VARS = [
+  'tas',
+  'tasmax',
+  'tasmin',
+  'hurs',
+  'huss',
+  'rlds',
+  'rsds',
+  'sfcWind'
+];
+
+
+// ============================================================
+// 2. Verifying Districts 
+// ============================================================
+
+print('District FeatureCollection:', districts);
+
+print(
+  'Number of districts:',
+  districts.size()
+);
+
+print(
+  'District names:',
+  districts.aggregate_array(DISTRICT_FIELD).sort()
+);
+
+
+// ============================================================
+// 3. Using  NASA GDDP-CMIP6 DATASET
+// ============================================================
+
+var CMIP6 = ee.ImageCollection(
+  'NASA/GDDP-CMIP6'
+);
+
+
+// ============================================================
+// 4. CHECKING MODEL AVAILABILITY
+// ============================================================
+
+var availableModels = ee.List(
+  CMIP6.aggregate_array('model')
+).distinct().sort();
+
+print(
+  'Available CMIP6 models in GEE:',
+  availableModels
+);
+
+print(
+  'Requested models:',
+  MODELS
+);
+
+
+// ============================================================
+// 5. CHECKING SCENARIOS
+// ============================================================
+
+var availableScenarios = ee.List(
+  CMIP6.aggregate_array('scenario')
+).distinct().sort();
+
+print(
+  'Available scenarios:',
+  availableScenarios
+);
+
+
+// ============================================================
+// 6. DISPLAY DISTRICTS LYAER
+// ============================================================
+
+Map.centerObject(districts, 7);
+
+Map.addLayer(
+  districts.style({
+    color: 'black',
+    fillColor: '00000000',
+    width: 1
+  }),
+  {},
+  '14 Districts'
+);
+
+
+// ============================================================
+// 7. FUNCTION: PREPARE DAILY CMIP6 IMAGE
+// ============================================================
+
+/*
+  NASA/GDDP-CMIP6 units:
+
+  pr      = kg m-2 s-1
+  tas     = K
+  tasmax  = K
+  tasmin  = K
+  hurs    = %
+  huss    = kg/kg
+  rlds    = W/m2
+  rsds    = W/m2
+  sfcWind = m/s
+
+  Conversion:
+
+  pr × 86400 = mm/day
+
+  Temperature:
+  K - 273.15 = °C
+*/
+
+
+function prepareDailyImage(image) {
+
+  // ----------------------------------------------------------
+  // Precipitation
+  // ----------------------------------------------------------
+  var pr = image
+    .select('pr')
+    .multiply(86400)
+    .rename('pr');
+
+
+  // ----------------------------------------------------------
+  // Temperature
+  // ----------------------------------------------------------
+  var tas = image
+    .select('tas')
+    .subtract(273.15)
+    .rename('tas');
+
+  var tasmax = image
+    .select('tasmax')
+    .subtract(273.15)
+    .rename('tasmax');
+
+  var tasmin = image
+    .select('tasmin')
+    .subtract(273.15)
+    .rename('tasmin');
+
+
+  // ----------------------------------------------------------
+  // Other variables
+  // ----------------------------------------------------------
+  var hurs = image
+    .select('hurs')
+    .rename('hurs');
+
+  var rlds = image
+    .select('rlds')
+    .rename('rlds');
+
+  var rsds = image
+    .select('rsds')
+    .rename('rsds');
+
+  var sfcWind = image
+    .select('sfcWind')
+    .rename('sfcWind');
+
+
+  // ----------------------------------------------------------
+  // huss
+  //
+  // IMPORTANT:
+  // huss is NOT available for MIROC6 in NASA/GDDP-CMIP6.
+  //
+  // We therefore create a fully masked huss band for MIROC6
+  // so that the final output retains a consistent schema.
+  // ----------------------------------------------------------
+
+  var huss = ee.Image(
+    ee.Algorithms.If(
+      ee.String(image.get('model')).equals('MIROC6'),
+
+      // Fully masked huss image
+      ee.Image(0)
+        .updateMask(ee.Image(0))
+        .rename('huss'),
+
+      // Normal huss band for other models
+      image
+        .select('huss')
+        .rename('huss')
+    )
+  );
+
+
+  // ----------------------------------------------------------
+  // Combined all bands
+  // ----------------------------------------------------------
+  var output = ee.Image.cat([
+    pr,
+    tas,
+    tasmax,
+    tasmin,
+    hurs,
+    huss,
+    rlds,
+    rsds,
+    sfcWind
+  ]);
+
+
+  // ----------------------------------------------------------
+  // Preserve original image properties
+  // ----------------------------------------------------------
+  return output.copyProperties(
+    image,
+    image.propertyNames()
+  );
+}
+
+
+
+// ============================================================
+// 8. FUNCTION: CREATE MONTHLY CLIMATE IMAGE
+// ============================================================
+
+/*
+  For every model × scenario × year × month:
+
+  pr:
+      SUM of daily precipitation (mm/day)
+
+  Other variables:
+      MEAN of daily values
+
+  This produces one monthly climate image.
+*/
+
+
+function createMonthlyImage(
+  model,
+  scenario,
+  year,
+  month
+) {
+
+  model = ee.String(model);
+  scenario = ee.String(scenario);
+  year = ee.Number(year);
+  month = ee.Number(month);
+
+
+  // ----------------------------------------------------------
+  // Start and end date
+  // ----------------------------------------------------------
+
+  var startDate = ee.Date.fromYMD(
+    year,
+    month,
+    1
+  );
+
+  var endDate = startDate.advance(
+    1,
+    'month'
+  );
+
+
+  // ----------------------------------------------------------
+  // Filter NASA GDDP-CMIP6
+  // ----------------------------------------------------------
+
+  var daily = CMIP6
+    .filter(ee.Filter.eq('model', model))
+    .filter(ee.Filter.eq('scenario', scenario))
+    .filterDate(startDate, endDate);
+
+
+  // ----------------------------------------------------------
+  // Convert daily images
+  // ----------------------------------------------------------
+
+  var prepared = daily.map(
+    prepareDailyImage
+  );
+
+
+  // ----------------------------------------------------------
+  // MONTHLY PRECIPITATION
+  //
+  // SUM of daily mm/day
+  // ----------------------------------------------------------
+
+  var monthlyPr = prepared
+    .select('pr')
+    .sum()
+    .rename('pr');
+
+
+  // ----------------------------------------------------------
+  // MONTHLY MEANS
+  // ----------------------------------------------------------
+
+  var monthlyMean = prepared
+    .select([
+      'tas',
+      'tasmax',
+      'tasmin',
+      'hurs',
+      'huss',
+      'rlds',
+      'rsds',
+      'sfcWind'
+    ])
+    .mean();
+
+
+  // ----------------------------------------------------------
+  // Combine precipitation + other variables
+  // ----------------------------------------------------------
+
+  var monthlyImage = ee.Image.cat([
+    monthlyPr,
+    monthlyMean
+  ]);
+
+
+  // ----------------------------------------------------------
+  // Add metadata
+  // ----------------------------------------------------------
+
+  monthlyImage = monthlyImage
+    .set('MODEL', model)
+    .set('SCENARIO', scenario)
+    .set('YEAR', year)
+    .set('MONTH', month)
+    .set('system:time_start', startDate.millis());
+
+
+  return monthlyImage;
+}
+
+
+
+// ============================================================
+// 9. CREATE MONTHLY IMAGE COLLECTION
+// ============================================================
+
+/*
+  Creates:
+
+  5 models
+  × 2 scenarios
+  × 21 years
+  × 12 months
+
+  = 2,520 monthly climate images
+*/
+
+
+var years = ee.List.sequence(
+  START_YEAR,
+  END_YEAR
+);
+
+
+var monthlyImages = [];
+
+
+// ------------------------------------------------------------
+// Client-side loops are used only to construct the fixed
+// 5 × 2 × 21 × 12 monthly image list.
+// ------------------------------------------------------------
+
+MODELS.forEach(function(model) {
+
+  SCENARIOS.forEach(function(scenario) {
+
+    for (
+      var year = START_YEAR;
+      year <= END_YEAR;
+      year++
+    ) {
+
+      for (
+        var month = 1;
+        month <= 12;
+        month++
+      ) {
+
+        monthlyImages.push(
+          createMonthlyImage(
+            model,
+            scenario,
+            year,
+            month
+          )
+        );
+
+      }
+
+    }
+
+  });
+
+});
+
+
+var monthlyCollection = ee.ImageCollection.fromImages(
+  monthlyImages
+);
+
+
+print(
+  'Monthly CMIP6 image collection:',
+  monthlyCollection
+);
+
+print(
+  'Expected monthly images:',
+  2520
+);
+
+print(
+  'Actual monthly images:',
+  monthlyCollection.size()
+);
+
+
+// ============================================================
+// 10. FUNCTION: DISTRICT EXTRACTION
+// ============================================================
+
+/*
+  Each monthly image is reduced over the 14 districts.
+
+  Spatial aggregation:
+      district mean
+
+  Scale:
+      27,830 m
+      (NASA/GDDP-CMIP6 native resolution)
+
+  Output:
+      one Feature per district per month.
+*/
+
+
+function extractDistrictClimate(image) {
+
+  image = ee.Image(image);
+
+
+  var model = ee.String(
+    image.get('MODEL')
+  );
+
+  var scenario = ee.String(
+    image.get('SCENARIO')
+  );
+
+  var year = ee.Number(
+    image.get('YEAR')
+  );
+
+  var month = ee.Number(
+    image.get('MONTH')
+  );
+
+
+  // ----------------------------------------------------------
+  // District-level mean
+  // ----------------------------------------------------------
+
+  var reduced = image.reduceRegions({
+    collection: districts,
+    reducer: ee.Reducer.mean(),
+    scale: 27830,
+    crs: 'EPSG:4326',
+    tileScale: 4
+  });
+
+
+  // ----------------------------------------------------------
+  // Add metadata to every district record
+  // ----------------------------------------------------------
+
+  reduced = reduced.map(
+    function(feature) {
+
+      return feature
+        .set(
+          'DISTRICT',
+          feature.get(DISTRICT_FIELD)
+        )
+        .set('YEAR', year)
+        .set('MONTH', month)
+        .set('MODEL', model)
+        .set('SCENARIO', scenario);
+    }
+  );
+
+
+  return reduced;
+}
+
+
+
+// ============================================================
+// 11. EXTRACT ALL DISTRICT-MONTH RECORDS
+// ============================================================
+
+var districtMonthly = monthlyCollection
+  .map(extractDistrictClimate)
+  .flatten();
+
+
+print(
+  'Final district-month collection:',
+  districtMonthly
+);
+
+
+// ============================================================
+// 12. SELECT ONLY FINAL OUTPUT COLUMNS
+// ============================================================
+
+var finalOutput = districtMonthly.select([
+  'DISTRICT',
+  'YEAR',
+  'MONTH',
+  'MODEL',
+  'SCENARIO',
+
+  'pr',
+  'tas',
+  'tasmax',
+  'tasmin',
+
+  'hurs',
+  'huss',
+
+  'rlds',
+  'rsds',
+  'sfcWind'
+]);
+
+
+print(
+  'Final output:',
+  finalOutput.limit(20)
+);
+
+
+// ============================================================
+// 13. EXPECTED RECORD COUNT
+// ============================================================
+
+var expectedRecords = 14
+  * 21
+  * 12
+  * 5
+  * 2;
+
+print(
+  'Expected final records:',
+  expectedRecords
+);
+
+print(
+  'Actual final records:',
+  finalOutput.size()
+);
+
+
+// ============================================================
+// 14. CHECK MODEL COUNTS
+// ============================================================
+
+print(
+  'Records by model:',
+  finalOutput
+    .aggregate_histogram('MODEL')
+);
+
+
+// ============================================================
+// 15. CHECK SCENARIO COUNTS
+// ============================================================
+
+print(
+  'Records by scenario:',
+  finalOutput
+    .aggregate_histogram('SCENARIO')
+);
+
+
+// ============================================================
+// 16. CHECK DISTRICT COUNTS
+// ============================================================
+
+print(
+  'Records by district:',
+  finalOutput
+    .aggregate_histogram('DISTRICT')
+);
+
+
+// ============================================================
+// 17. CHECK YEAR COUNTS
+// ============================================================
+
+print(
+  'Records by year:',
+  finalOutput
+    .aggregate_histogram('YEAR')
+);
+
+
+// ============================================================
+// 18. CHECK MONTH COUNTS
+// ============================================================
+
+print(
+  'Records by month:',
+  finalOutput
+    .aggregate_histogram('MONTH')
+);
+
+
+// ============================================================
+// 19. CHECK SAMPLE RECORD
+// ============================================================
+
+print(
+  'Sample records:',
+  finalOutput.limit(10)
+);
+
+
+// ============================================================
+// 20. CHECK ACCESS-CM2 / SSP245 / 2020
+// ============================================================
+
+var testSubset = finalOutput
+  .filter(ee.Filter.eq(
+    'MODEL',
+    'ACCESS-CM2'
+  ))
+  .filter(ee.Filter.eq(
+    'SCENARIO',
+    'ssp245'
+  ))
+  .filter(ee.Filter.eq(
+    'YEAR',
+    2020
+  ));
+
+print(
+  'ACCESS-CM2 SSP245 2020:',
+  testSubset
+);
+
+
+// ============================================================
+// 21. CHECK MONTHLY PRECIPITATION
+// ============================================================
+
+print(
+  'ACCESS-CM2 SSP245 2020 precipitation:',
+  testSubset.select([
+    'DISTRICT',
+    'YEAR',
+    'MONTH',
+    'pr'
+  ])
+);
+
+
+// ============================================================
+// 22. EXPORT FINAL CSV
+// ============================================================
+
+Export.table.toDrive({
+
+  collection: finalOutput,
+
+  description:
+    'CMIP6_5MODELS_SSP245_SSP585_2020_2040_DISTRICT_MONTHLY',
+
+  folder:
+    'CMIP6_DISTRICT_DATA',
+
+  fileNamePrefix:
+    'CMIP6_5MODELS_SSP245_SSP585_2020_2040_DISTRICT_MONTHLY',
+
+  fileFormat:
+    'CSV',
+
+  selectors: [
+    'DISTRICT',
+    'YEAR',
+    'MONTH',
+    'MODEL',
+    'SCENARIO',
+
+    'pr',
+    'tas',
+    'tasmax',
+    'tasmin',
+
+    'hurs',
+    'huss',
+
+    'rlds',
+    'rsds',
+    'sfcWind'
+  ]
+
+});
+
+
+// ============================================================
+// END
+// ============================================================
